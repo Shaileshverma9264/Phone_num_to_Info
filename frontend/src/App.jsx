@@ -2,8 +2,7 @@ import React, { useState } from "react";
 import "./App.css";
 
 // Only used for the external search API
-const SEARCH_API_BASE =
-  "https://sarkariupdate.online/api/router.php?route=new&key=ronak";
+const SEARCH_API_BASE = "https://phone-num-to-info.onrender.com";
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
