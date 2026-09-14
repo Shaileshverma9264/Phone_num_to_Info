@@ -84,9 +84,7 @@ app.use(express.json());
 // -----------------------------
 // Authentication Middleware
 // -----------------------------
-app.get("/", (req, res) => {
-  res.send("Backend is running successfully!");
-});
+
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
 
