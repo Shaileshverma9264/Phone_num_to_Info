@@ -98,53 +98,34 @@ function SearchPage({ logout }) {
     setSources([]);
     setRawData(null);
 
-       try {
-      // ✅ Apna proxy use karo (localhost:5000)
-      const url = `http://localhost:5000/api/search?mobile=${encodeURIComponent(mobile)}`;
+    try {
+    // ✅ Production + Development dono me chalega
+    const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
 
-      console.log("Requesting (via own proxy):", url);
+    console.log("Requesting:", url);
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60000);
+    const response = await fetch(url);
+    const text = await response.text();
+    console.log("Raw API Response:", text);
 
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-
-      const text = await response.text();
-      console.log("Raw API Response:", text);
-
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(`Server ne bheja: ${text.slice(0, 200)}`);
-      }
-
-      setRawData(data);
-
-      if (data.status === false || data.status === "false") {
-        throw new Error(
-          data.message || data.error || "API abhi reboot ho rahi hai."
-        );
-      }
-
-      // ✅ Sources normalize karo (source1, source2...)
-      const parsedSources = normalizeSources(data);
-
-      if (
-        parsedSources.length === 0 ||
-        parsedSources.every((s) => s.records.length === 0)
-      ) {
-        throw new Error("Is number ka koi record nahi mila.");
-      }
-
-      setSources(parsedSources);
-    } catch (err) {
-      console.error("Search Error:", err);
-      setError(err.message || "Unable to connect to server.");
-    } finally {
-      setLoading(false);
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Server ne bheja: ${text.slice(0, 200)}`);
     }
+
+    setRawData(data);
+
+    if (data.status === false || data.status === "false") {
+      throw new Error(data.message || data.error || "API rebooting hai.");
+    }
+
+    // ...records normalize karo...
+  } catch (err) {
+    console.error("Search Error:", err);
+    setError(err.message || "Unable to connect to server.");
+  }
   };
 
   const totalRecords = sources.reduce((sum, s) => sum + s.records.length, 0);
