@@ -117,8 +117,7 @@ function SearchPage({ logout }) {
       setStatus(`Searching... attempt ${attempt} of ${MAX_ATTEMPTS}`);
 
       // ✅ Vite proxy URL — CORS issue khatam
-      const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
-
+     const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
       console.log(`[Attempt ${attempt}] Fetching:`, url);
 
       const response = await fetch(url, {
