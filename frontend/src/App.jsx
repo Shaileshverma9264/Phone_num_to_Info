@@ -1,12 +1,54 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./App.css";
 
-// =================================
-// API CONFIG
-// =================================
-const API_BASE = "https://l34k-osint.onrender.com/search";
 const API_KEY = "92efacd7933564e4a151335eaa13fdf4";
+const CACHE_KEY = "mobile_lookup_cache_v1";
+const CACHE_TTL = 1000 * 60 * 60; // 1 hour
 
+// =================================
+// CACHE HELPERS
+// =================================
+function getCache() {
+  try {
+    return JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function getCached(mobile) {
+  const cache = getCache();
+  const entry = cache[mobile];
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) {
+    delete cache[mobile];
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    return null;
+  }
+  return entry.data;
+}
+
+function setCache(mobile, data) {
+  try {
+    const cache = getCache();
+    cache[mobile] = { data, ts: Date.now() };
+    // Keep only last 50 searches
+    const keys = Object.keys(cache);
+    if (keys.length > 50) {
+      const sorted = keys.sort((a, b) => cache[b].ts - cache[a].ts);
+      sorted.slice(50).forEach((k) => delete cache[k]);
+    }
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch {}
+}
+
+function clearCache() {
+  localStorage.removeItem(CACHE_KEY);
+}
+
+// =================================
+// APP
+// =================================
 function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
   const [username, setUsername] = useState("");
@@ -14,12 +56,10 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
 
-  // ---------------- LOGIN ----------------
   const login = async (e) => {
     e.preventDefault();
     setLoginError("");
     setLoggingIn(true);
-
     try {
       if (username === "admin" && password === "123456") {
         const demoToken = "authenticated-user";
@@ -37,13 +77,11 @@ function App() {
     }
   };
 
-  // ---------------- LOGOUT ----------------
   const logout = () => {
     localStorage.removeItem("token");
     setToken(null);
   };
 
-  // ---------------- LOGIN PAGE ----------------
   if (!token) {
     return (
       <main className="page">
@@ -51,7 +89,6 @@ function App() {
           <div className="icon">🔐</div>
           <h1>User Login</h1>
           <p className="subtitle">Login to access the search system</p>
-
           <form onSubmit={login}>
             <input
               type="text"
@@ -71,14 +108,12 @@ function App() {
               {loggingIn ? "Logging in..." : "Login"}
             </button>
           </form>
-
           {loginError && <div className="error">{loginError}</div>}
         </section>
       </main>
     );
   }
 
-  // ---------------- AUTHENTICATED ----------------
   return <SearchPage logout={logout} />;
 }
 
@@ -93,92 +128,160 @@ function SearchPage({ logout }) {
   const [error, setError] = useState("");
   const [showRaw, setShowRaw] = useState(false);
   const [status, setStatus] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const [cacheHit, setCacheHit] = useState(false);
+  const timerRef = useRef(null);
+  const abortRef = useRef(null);
 
-  // ---------------- SEARCH WITH RETRY ----------------
- const searchMobile = async (e) => {
-  e.preventDefault();
+  // Elapsed timer during loading
+  useEffect(() => {
+    if (loading) {
+      setElapsed(0);
+      const start = Date.now();
+      timerRef.current = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - start) / 1000));
+      }, 500);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [loading]);
 
-  if (!/^[6-9]\d{9}$/.test(mobile)) {
-    setError("Please enter a valid 10-digit Indian mobile number.");
+  const searchMobile = async (e) => {
+    e.preventDefault();
+
+    if (!/^[6-9]\d{9}$/.test(mobile)) {
+      setError("Please enter a valid 10-digit Indian mobile number.");
+      setResults([]);
+      setRawData(null);
+      return;
+    }
+
+    // Cancel previous request
+    if (abortRef.current) {
+      try { abortRef.current.abort(); } catch {}
+    }
+
+    setError("");
+    setStatus("");
+    setCacheHit(false);
+
+    // ✅ STEP 1: Check cache first
+    const cached = getCached(mobile);
+    if (cached) {
+      console.log("📦 Cache hit for", mobile);
+      const records = extractRecords(cached);
+      setResults(records);
+      setRawData(cached);
+      setCacheHit(true);
+      setStatus("Loaded from cache ⚡");
+      setTimeout(() => setStatus(""), 2000);
+      return;
+    }
+
+    setLoading(true);
     setResults([]);
-    return;
-  }
+    setRawData(null);
 
-  setLoading(true);
-  setError("");
-  setStatus("");
-  setResults([]);
-  setRawData(null);
+    const MAX_ATTEMPTS = 2;
+    let success = false;
 
-  const MAX_ATTEMPTS = 3;
-
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    try {
-      setStatus(`Searching... attempt ${attempt} of ${MAX_ATTEMPTS}`);
-
-      // ✅ Vite proxy URL — CORS issue khatam
-     const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
-      console.log(`[Attempt ${attempt}] Fetching:`, url);
-
-      const response = await fetch(url, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-      });
-
-      const text = await response.text();
-      console.log(`[Attempt ${attempt}] Response:`, text.slice(0, 300));
-
-      let data;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !success; attempt++) {
       try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error("Invalid JSON from server");
-      }
+        setStatus(
+          attempt === 1
+            ? "Connecting to server... (pehli baar 30 sec lag sakte hain)"
+            : `Retry ${attempt}/${MAX_ATTEMPTS}...`
+        );
 
-      if (data.status === false || data.status === "false") {
-        const msg = data.message || data.error || "API did not respond";
+        const controller = new AbortController();
+        abortRef.current = controller;
 
-        if (
-          attempt < MAX_ATTEMPTS &&
-          (data.code === 504 ||
-            data.action === "retry" ||
-            /retry|did not respond|timeout/i.test(msg))
-        ) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
+        const timeout = setTimeout(() => controller.abort(), 45000);
+
+        const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
+        console.log(`[Attempt ${attempt}] →`, url);
+
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+
+        clearTimeout(timeout);
+
+        const text = await response.text();
+        console.log(`[Attempt ${attempt}] ← ${response.status}`, text.slice(0, 200));
+
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error("Server returned non-JSON response");
         }
 
-        throw new Error(msg);
-      }
+        // API internal error
+        if (data.status === false || data.status === "false") {
+          const msg = data.message || data.error || "API error";
 
-      const records = extractRecords(data);
+          if (
+            attempt < MAX_ATTEMPTS &&
+            (data.code === 504 ||
+              data.action === "retry" ||
+              /retry|did not respond|timeout/i.test(msg))
+          ) {
+            setStatus("Server busy, retrying...");
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
 
-      if (records.length === 0) {
-        throw new Error("Is number ka koi record nahi mila.");
-      }
+          throw new Error(msg);
+        }
 
-      setResults(records);
-      setRawData(data);
-      setStatus("");
-      setLoading(false);
-      return;
-    } catch (err) {
-      console.error(`Attempt ${attempt} error:`, err.message);
+        const records = extractRecords(data);
 
-      if (attempt < MAX_ATTEMPTS) {
-        await new Promise((r) => setTimeout(r, 2000));
+        if (records.length === 0) {
+          throw new Error("Is number ka koi record nahi mila.");
+        }
+
+        setResults(records);
+        setRawData(data);
+        setCache(mobile, data);  // ✅ Cache save
+        setStatus("");
+        success = true;
+      } catch (err) {
+        console.error(`Attempt ${attempt} failed:`, err.message);
+
+        if (err.name === "AbortError") {
+          setError("Request timeout ho gaya (45 sec). Server slow hai — thodi der baad try karo.");
+          break;
+        }
+
+        if (attempt === MAX_ATTEMPTS) {
+          setError(
+            `Server ne jawab nahi diya (2 baar try kiya). API free tier pe hai, thodi der baad dobara try karo.`
+          );
+        } else {
+          await new Promise((r) => setTimeout(r, 1500));
+        }
       }
     }
-  }
 
-  setError(
-    `API ne ${MAX_ATTEMPTS} baar bhi jawab nahi diya. Thodi der baad dobara try karo.`
-  );
-  setStatus("");
-  setLoading(false);
-};
+    setLoading(false);
+    setStatus("");
+    abortRef.current = null;
+  };
 
-  // ---------------- UI ----------------
+  const cancelSearch = () => {
+    if (abortRef.current) {
+      try { abortRef.current.abort(); } catch {}
+    }
+    setLoading(false);
+    setStatus("");
+    setError("Search cancelled.");
+  };
+
   return (
     <main className="page">
       <section className="card">
@@ -192,9 +295,7 @@ function SearchPage({ logout }) {
           </button>
         </div>
 
-        <p className="subtitle">
-          Search authorized records by mobile number
-        </p>
+        <p className="subtitle">Search authorized records by mobile number</p>
 
         <form onSubmit={searchMobile}>
           <input
@@ -207,13 +308,33 @@ function SearchPage({ logout }) {
               setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))
             }
             required
+            disabled={loading}
           />
           <button type="submit" disabled={loading}>
             {loading ? "Searching..." : "Search"}
           </button>
         </form>
 
-        {status && <div className="info">{status}</div>}
+        {/* Loading bar with timer */}
+        {loading && (
+          <div className="loading-box">
+            <div className="loading-bar">
+              <div className="loading-bar-fill" />
+            </div>
+            <div className="loading-info">
+              <span>{status || "Searching..."}</span>
+              <span className="timer">{elapsed}s</span>
+            </div>
+            <button className="cancel-btn" onClick={cancelSearch} type="button">
+              Cancel
+            </button>
+          </div>
+        )}
+
+        {cacheHit && !loading && (
+          <div className="info">⚡ Loaded from cache (instant)</div>
+        )}
+
         {error && <div className="error">{error}</div>}
 
         {results.length > 0 && (
@@ -223,13 +344,27 @@ function SearchPage({ logout }) {
                 Found {results.length} Record
                 {results.length > 1 ? "s" : ""}
               </h2>
-              <button
-                className="toggle-btn"
-                type="button"
-                onClick={() => setShowRaw((s) => !s)}
-              >
-                {showRaw ? "👁️ Formatted" : "{ } Raw JSON"}
-              </button>
+              <div className="header-btns">
+                <button
+                  className="toggle-btn"
+                  type="button"
+                  onClick={() => setShowRaw((s) => !s)}
+                >
+                  {showRaw ? "👁️ Formatted" : "{ } Raw JSON"}
+                </button>
+                <button
+                  className="clear-cache-btn"
+                  type="button"
+                  onClick={() => {
+                    clearCache();
+                    setStatus("Cache cleared");
+                    setTimeout(() => setStatus(""), 1500);
+                  }}
+                  title="Clear all cached searches"
+                >
+                  🗑️
+                </button>
+              </div>
             </div>
 
             {showRaw ? (
@@ -253,19 +388,17 @@ function SearchPage({ logout }) {
 }
 
 // =================================
-// EXTRACT RECORDS — nested data source1, source2... se
+// EXTRACT RECORDS
 // =================================
 function extractRecords(data) {
   const out = [];
 
-  // Format: data.data.source1.records, data.data.source2.records, ...
   if (
     data?.data &&
     typeof data.data === "object" &&
     !Array.isArray(data.data)
   ) {
     const entries = Object.entries(data.data);
-
     const isSourceGroup = entries.some(
       ([, v]) => v && typeof v === "object" && (v.records || v.title)
     );
@@ -279,7 +412,6 @@ function extractRecords(data) {
       return out;
     }
 
-    // Direct record
     if (
       data.data.mobile ||
       data.data.name ||
@@ -290,7 +422,6 @@ function extractRecords(data) {
     }
   }
 
-  // Flat array formats
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.results)) return data.results;
   if (Array.isArray(data?.Results)) return data.Results;
@@ -347,8 +478,7 @@ function RecordCard({ record }) {
       !Array.isArray(v)
   );
 
-  const name =
-    record.FullName || record.name || record.fname || "Unknown";
+  const name = record.FullName || record.name || record.fname || "Unknown";
 
   return (
     <div className="result">

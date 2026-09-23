@@ -15,6 +15,23 @@ export default async function handler(req, res) {
 
   const { mobile } = req.query;
 
+  const cache = new Map();
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  const { mobile } = req.query;
+  if (!mobile) return res.status(400).json({ error: "mobile required" });
+
+  // Check cache
+  const cached = cache.get(mobile);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("X-Cache", "HIT");
+    return res.status(200).send(cached.text);
+  }
+
   if (!mobile) {
     return res.status(400).json({ error: "mobile required" });
   }
