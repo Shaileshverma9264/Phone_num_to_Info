@@ -1,8 +1,11 @@
 import React, { useState } from "react";
 import "./App.css";
 
+// =================================
+// API CONFIG
+// =================================
 const API_BASE = "https://l34k-osint.onrender.com/search";
-const API_KEY  = "92efacd7933564e4a151335eaa13fdf4";
+const API_KEY = "92efacd7933564e4a151335eaa13fdf4";
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
@@ -11,10 +14,12 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
 
+  // ---------------- LOGIN ----------------
   const login = async (e) => {
     e.preventDefault();
     setLoginError("");
     setLoggingIn(true);
+
     try {
       if (username === "admin" && password === "123456") {
         const demoToken = "authenticated-user";
@@ -32,11 +37,13 @@ function App() {
     }
   };
 
+  // ---------------- LOGOUT ----------------
   const logout = () => {
     localStorage.removeItem("token");
     setToken(null);
   };
 
+  // ---------------- LOGIN PAGE ----------------
   if (!token) {
     return (
       <main className="page">
@@ -44,6 +51,7 @@ function App() {
           <div className="icon">🔐</div>
           <h1>User Login</h1>
           <p className="subtitle">Login to access the search system</p>
+
           <form onSubmit={login}>
             <input
               type="text"
@@ -63,12 +71,14 @@ function App() {
               {loggingIn ? "Logging in..." : "Login"}
             </button>
           </form>
+
           {loginError && <div className="error">{loginError}</div>}
         </section>
       </main>
     );
   }
 
+  // ---------------- AUTHENTICATED ----------------
   return <SearchPage logout={logout} />;
 }
 
@@ -76,60 +86,100 @@ function App() {
 // SEARCH PAGE
 // =================================
 function SearchPage({ logout }) {
-  const [mobile, setMobile]     = useState("");
-  const [sources, setSources]   = useState([]);   // [{title, description, records:[]}]
-  const [rawData, setRawData]   = useState(null);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState("");
-  const [showRaw, setShowRaw]   = useState(false);
+  const [mobile, setMobile] = useState("");
+  const [results, setResults] = useState([]);
+  const [rawData, setRawData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [showRaw, setShowRaw] = useState(false);
+  const [status, setStatus] = useState("");
 
-  const searchMobile = async (e) => {
-    e.preventDefault();
+  // ---------------- SEARCH WITH RETRY ----------------
+ const searchMobile = async (e) => {
+  e.preventDefault();
 
-    if (!/^[6-9]\d{9}$/.test(mobile)) {
-      setError("Please enter a valid 10-digit Indian mobile number.");
-      setSources([]);
-      setRawData(null);
-      return;
-    }
-
-    setLoading(true);
-    setError("");
-    setSources([]);
-    setRawData(null);
-
-    try {
-    // ✅ Production + Development dono me chalega
-    const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
-
-    console.log("Requesting:", url);
-
-    const response = await fetch(url);
-    const text = await response.text();
-    console.log("Raw API Response:", text);
-
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      throw new Error(`Server ne bheja: ${text.slice(0, 200)}`);
-    }
-
-    setRawData(data);
-
-    if (data.status === false || data.status === "false") {
-      throw new Error(data.message || data.error || "API rebooting hai.");
-    }
-
-    // ...records normalize karo...
-  } catch (err) {
-    console.error("Search Error:", err);
-    setError(err.message || "Unable to connect to server.");
+  if (!/^[6-9]\d{9}$/.test(mobile)) {
+    setError("Please enter a valid 10-digit Indian mobile number.");
+    setResults([]);
+    return;
   }
-  };
 
-  const totalRecords = sources.reduce((sum, s) => sum + s.records.length, 0);
+  setLoading(true);
+  setError("");
+  setStatus("");
+  setResults([]);
+  setRawData(null);
 
+  const MAX_ATTEMPTS = 3;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      setStatus(`Searching... attempt ${attempt} of ${MAX_ATTEMPTS}`);
+
+      // ✅ Vite proxy URL — CORS issue khatam
+      const url = `/api/search?mobile=${encodeURIComponent(mobile)}`;
+
+      console.log(`[Attempt ${attempt}] Fetching:`, url);
+
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+
+      const text = await response.text();
+      console.log(`[Attempt ${attempt}] Response:`, text.slice(0, 300));
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error("Invalid JSON from server");
+      }
+
+      if (data.status === false || data.status === "false") {
+        const msg = data.message || data.error || "API did not respond";
+
+        if (
+          attempt < MAX_ATTEMPTS &&
+          (data.code === 504 ||
+            data.action === "retry" ||
+            /retry|did not respond|timeout/i.test(msg))
+        ) {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+
+        throw new Error(msg);
+      }
+
+      const records = extractRecords(data);
+
+      if (records.length === 0) {
+        throw new Error("Is number ka koi record nahi mila.");
+      }
+
+      setResults(records);
+      setRawData(data);
+      setStatus("");
+      setLoading(false);
+      return;
+    } catch (err) {
+      console.error(`Attempt ${attempt} error:`, err.message);
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
+  setError(
+    `API ne ${MAX_ATTEMPTS} baar bhi jawab nahi diya. Thodi der baad dobara try karo.`
+  );
+  setStatus("");
+  setLoading(false);
+};
+
+  // ---------------- UI ----------------
   return (
     <main className="page">
       <section className="card">
@@ -143,7 +193,9 @@ function SearchPage({ logout }) {
           </button>
         </div>
 
-        <p className="subtitle">Search authorized records by mobile number</p>
+        <p className="subtitle">
+          Search authorized records by mobile number
+        </p>
 
         <form onSubmit={searchMobile}>
           <input
@@ -162,14 +214,15 @@ function SearchPage({ logout }) {
           </button>
         </form>
 
+        {status && <div className="info">{status}</div>}
         {error && <div className="error">{error}</div>}
 
-        {sources.length > 0 && (
+        {results.length > 0 && (
           <div className="results-container">
             <div className="results-header">
               <h2>
-                Found {totalRecords} Record{totalRecords > 1 ? "s" : ""} in{" "}
-                {sources.length} Source{sources.length > 1 ? "s" : ""}
+                Found {results.length} Record
+                {results.length > 1 ? "s" : ""}
               </h2>
               <button
                 className="toggle-btn"
@@ -181,20 +234,12 @@ function SearchPage({ logout }) {
             </div>
 
             {showRaw ? (
-              <pre className="json-view">{JSON.stringify(rawData, null, 2)}</pre>
+              <pre className="json-view">
+                {JSON.stringify(rawData, null, 2)}
+              </pre>
             ) : (
-              sources.map((source, sIdx) => (
-                <div key={sIdx} className="source-block">
-                  <div className="source-header">
-                    <h3>{source.title || `Source ${sIdx + 1}`}</h3>
-                    {source.description && (
-                      <p className="source-desc">{source.description}</p>
-                    )}
-                  </div>
-                  {source.records.map((record, rIdx) => (
-                    <RecordCard key={rIdx} record={record} />
-                  ))}
-                </div>
+              results.map((record, index) => (
+                <RecordCard key={index} record={record} />
               ))
             )}
           </div>
@@ -209,56 +254,48 @@ function SearchPage({ logout }) {
 }
 
 // =================================
-// NORMALIZE — API ke nested response ko flat karo
+// EXTRACT RECORDS — nested data source1, source2... se
 // =================================
-function normalizeSources(data) {
+function extractRecords(data) {
   const out = [];
 
-  // Case 1: Naya format — data.data.source1, source2, ...
-  if (data?.data && typeof data.data === "object" && !Array.isArray(data.data)) {
+  // Format: data.data.source1.records, data.data.source2.records, ...
+  if (
+    data?.data &&
+    typeof data.data === "object" &&
+    !Array.isArray(data.data)
+  ) {
     const entries = Object.entries(data.data);
 
-    // Agar data.data me "records" key hai to wo direct ek source hai
-    const looksLikeSourceGroup = entries.some(
+    const isSourceGroup = entries.some(
       ([, v]) => v && typeof v === "object" && (v.records || v.title)
     );
 
-    if (looksLikeSourceGroup) {
+    if (isSourceGroup) {
       for (const [, val] of entries) {
-        if (val && typeof val === "object") {
-          out.push({
-            title: val.title || "",
-            description: val.description || "",
-            records: Array.isArray(val.records)
-              ? val.records
-              : val.mobile || val.name || val.Phone || val.FullName
-              ? [val]
-              : [],
-          });
+        if (val && typeof val === "object" && Array.isArray(val.records)) {
+          out.push(...val.records);
         }
       }
       return out;
     }
 
-    // Warna data.data khud ek record hai
-    if (data.data.mobile || data.data.name || data.data.Phone || data.data.FullName) {
-      out.push({ title: "", description: "", records: [data.data] });
-      return out;
+    // Direct record
+    if (
+      data.data.mobile ||
+      data.data.name ||
+      data.data.Phone ||
+      data.data.FullName
+    ) {
+      return [data.data];
     }
   }
 
-  // Case 2: Flat array
-  let flat = [];
-  if (Array.isArray(data)) flat = data;
-  else if (Array.isArray(data?.Results)) flat = data.Results;
-  else if (Array.isArray(data?.results)) flat = data.results;
-  else if (Array.isArray(data?.result)) flat = data.result;
-  else if (Array.isArray(data?.data)) flat = data.data;
-  else if (data?.mobile || data?.name) flat = [data];
-
-  if (flat.length) {
-    out.push({ title: "", description: "", records: flat });
-  }
+  // Flat array formats
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.results)) return data.results;
+  if (Array.isArray(data?.Results)) return data.Results;
+  if (Array.isArray(data?.data)) return data.data;
 
   return out;
 }
@@ -267,7 +304,6 @@ function normalizeSources(data) {
 // RECORD CARD
 // =================================
 const LABELS = {
-  // Common
   Phone: "📱 Phone",
   Phone2: "📱 Phone 2",
   Phone3: "📱 Phone 3",
@@ -275,19 +311,16 @@ const LABELS = {
   Phone5: "📱 Phone 5",
   mobile: "📱 Mobile",
   phone: "📱 Phone",
-  // Name
   FullName: "👤 Full Name",
   name: "👤 Name",
   fname: "👨 Father",
   father: "👨 Father",
-  // Address
   Adres: "🏠 Address",
   Adres2: "🏠 Address 2",
   Adres3: "🏠 Address 3",
   address: "🏠 Address",
   Region: "📍 Region",
   IndianState: "📍 State",
-  // Other
   Email: "📧 Email",
   MobileOperator: "📶 Operator",
   circle: "📡 Circle",

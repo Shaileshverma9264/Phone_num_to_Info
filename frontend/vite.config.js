@@ -5,11 +5,15 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": {
+      "/api/search": {
         target: "https://l34k-osint.onrender.com",
         changeOrigin: true,
         secure: false,
-        rewrite: (path) => path.replace(/^\/api/, "/search"),
+        rewrite: (path) => {
+          const url = new URL(path, "http://dummy");
+          const mobile = url.searchParams.get("mobile") || "";
+          return `/search?key=92efacd7933564e4a151335eaa13fdf4&query=91${mobile}`;
+        },
         configure: (proxy) => {
           proxy.on("proxyReq", (proxyReq) => {
             proxyReq.setHeader(
@@ -18,6 +22,7 @@ export default defineConfig({
             );
             proxyReq.setHeader("Accept", "application/json, text/plain, */*");
             proxyReq.setHeader("Referer", "https://l34k-osint.onrender.com/");
+            proxyReq.setHeader("Origin", "https://l34k-osint.onrender.com");
           });
         },
       },
