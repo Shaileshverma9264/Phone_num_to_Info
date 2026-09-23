@@ -185,7 +185,7 @@ function SearchPage({ logout }) {
     setResults([]);
     setRawData(null);
 
-    const MAX_ATTEMPTS = 2;
+    const MAX_ATTEMPTS = 4;
     let success = false;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS && !success; attempt++) {
