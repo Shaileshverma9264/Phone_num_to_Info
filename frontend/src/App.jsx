@@ -222,22 +222,21 @@ function SearchPage({ logout }) {
         }
 
         // API internal error
-        if (data.status === false || data.status === "false") {
-          const msg = data.message || data.error || "API error";
+      if (data.status === false || data.status === "false") {
+  const msg = data.message || data.error || "API error";
 
-          if (
-            attempt < MAX_ATTEMPTS &&
-            (data.code === 504 ||
-              data.action === "retry" ||
-              /retry|did not respond|timeout/i.test(msg))
-          ) {
-            setStatus("Server busy, retrying...");
-            await new Promise((r) => setTimeout(r, 1500));
-            continue;
-          }
+  // Vercel timeout — turant fail mat karo, retry karo
+  if (
+    data.code === 504 &&
+    attempt < MAX_ATTEMPTS
+  ) {
+    setStatus("API slow hai, dobara try kar rahe hain...");
+    await new Promise((r) => setTimeout(r, 1000));
+    continue;
+  }
 
-          throw new Error(msg);
-        }
+  throw new Error(msg);
+}
 
         const records = extractRecords(data);
 
